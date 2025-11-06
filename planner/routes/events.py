@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Body, HTTPException, status
-from models.events import Event
+from fastapi import APIRouter, Body, HTTPException, status, Path
+from models.events import Event, EventUpdate
 from typing import List
 
 event_router = APIRouter(
@@ -28,6 +28,26 @@ async def create_event(body: Event = Body(...)) -> dict:
     return {
         "message": "Event created successfully"
     }
+
+
+@event_router.put("/{id}")
+async def update_event(
+        event_data: EventUpdate, id: int = Path(..., title="The ID of the event to be updated")) -> dict:
+    for event in events:
+        if event.id == id:
+            event.title = event_data.title
+            event.image = event_data.image
+            event.description = event_data.description
+            event.tags = event_data.tags
+            event.location = event_data.location
+            return {
+                "message": "Event updated successfully."
+            }
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Event with supplied ID does not exist"
+    )
 
 @event_router.delete("/{id}")
 async def delete_event(id: int) -> dict:

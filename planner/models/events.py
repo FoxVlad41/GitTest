@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 class Event(BaseModel):
     id: int
@@ -17,5 +17,23 @@ class Event(BaseModel):
                 "description": "We will be discussing the contents of the FastAPI book in this event. Ensure to come with your own copy to win gifts!",
                 "tags": ["python", "fastapi", "book", "launch"],
                 "location": "Google Meet"
+            }
+        }
+
+class EventUpdate(BaseModel):
+    title: Optional[str]
+    image: Optional[str]
+    description: Optional[str]
+    tags: Optional[List[str]]
+    location: Optional[str]
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "title": "Updated Event Title",
+                "image": "https://newimage.com/updated.jpg",
+                "description": "This is a completely updated description",
+                "tags": ["updated", "event", "tags"],
+                "location": "Updated Location"
             }
         }
