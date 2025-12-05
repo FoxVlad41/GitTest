@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlmodel import select, Session
+from database.connection import get_session
+from models.events import Event, EventUpdate
 from typing import List
 
 event_router = APIRouter()

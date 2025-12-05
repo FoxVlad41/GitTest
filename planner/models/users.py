@@ -1,29 +1,41 @@
-from pydantic import BaseModel
 from typing import Optional, List
-from models.events import Event
+from sqlmodel import JSON, SQLModel, Field, Column
 
-class User(BaseModel):
-    email: str
+class User(SQLModel, table=True):
+    id: int = Field(default=None, primary_key=True)
+    email: str = Field(unique=True, index=True)
     password: str
-    events: Optional[List[Event]] = []
+    events: List[str] = Field(sa_column=Column(JSON))
 
     class Config:
         json_schema_extra = {
             "example": {
-                "email": "fastapi@packt.com",
-                "password": "strong!!!",
+                "email": "user@example.com",
+                "password": "strongpassword123",
                 "events": []
             }
         }
 
-class UserSignIn(BaseModel):
+class UserSignIn(SQLModel):
     email: str
     password: str
 
     class Config:
         json_schema_extra = {
             "example": {
-                "email": "fastapi@packt.com",
-                "password": "strong!!!"
+                "email": "user@example.com",
+                "password": "strongpassword123"
             }
         }
+
+'''class UserCreate(SQLModel):
+    email: str
+    password: str
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "user@example.com",
+                "password": "strongpassword123"
+            }
+        }'''
