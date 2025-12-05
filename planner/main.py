@@ -1,13 +1,17 @@
 from fastapi import FastAPI
-from routes.users import user_router
+from database.connection import settings
 from routes.events import event_router
-import uvicorn
+from routes.users import user_router
 
 app = FastAPI()
 
-# Register routes
-app.include_router(user_router, prefix="/user")
+@app.on_event("startup")
+async def startup_db_client():
+    await settings.initialize_database()
+
 app.include_router(event_router, prefix="/event")
+app.include_router(user_router, prefix="/user")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
