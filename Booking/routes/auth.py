@@ -1,84 +1,161 @@
-from fastapi import APIRouter, HTTPException, status
-from models.users import User, UserSignIn
+from fastapi import APIRouter, HTTPException, status, Depends
+from sqlmodel import Session, select
+
+from models.users import User, UserSignIn, UserResponse
+from database.connection import get_session
 
 user_router = APIRouter(
     tags=["User"]
 )
 
-#База данных пользователей
-users_db = {}
-#Счётчик для ID пользователей
-user_id = 0
 
-#Проверка: существует ли пользователь с таким телефоном
-def phone_exists(phone: str) -> bool:
-    for user_data in users_db.values():
-        if user_data["phone"] == phone:
-            return True
-    return False
-#Функция нахождения аккаунта пользователя по телефону
-def find_user_by_phone(phone: str):
-    """Находит пользователя по телефону"""
-    for user_data in users_db.values():
-        if user_data["phone"] == phone:
-            return user_data
-    return None
+# Регистрация
+@user_router.post("/signup", response_model=dict)
+async def sign_new_user(
+        user: User,
+        session: Session = Depends(get_session)
+) -> dict:
 
-#Регистрация
-@user_router.post("/signup")
-async def sign_new_user(user: User) -> dict:
-    global user_id
-    
-    #Проверка: существует ли пользователь с таким телефоном
-    user_data = phone_exists(user.phone)
-    if user_data:
+    # Проверка: существует ли пользователь с таким телефоном
+    existing_user = session.exec(
+        select(User).where(User.phone == user.phone)
+    ).first()
+
+    if existing_user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
+            status_code=status.HTTP_409_CONFLICT,
             detail="User with this phone number already exists"
-        ) 
+        )
 
-    #Регистрируем нового пользователя
-    user_id += 1
-    users_db[user_id] = {
-        "id": user_id,
-        "fio": user.fio,
-        "room": user.room,
-        "phone": user.phone,
-        "password": user.password
-    }
-    
+    # Добавляем нового пользователя
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+
     return {
-        "message": "User successfully registered"
+        "message": "User successfully registered",
+        "user_id": user.id
     }
-#Авторизация
-@user_router.post("/signin")
-async def sign_user_in(user: UserSignIn) -> dict:
-    
-    #Проверка: существует ли пользователь с таким телефоном
-    user_data = find_user_by_phone(user.phone)
-    if not user_data:
+
+
+# Авторизация
+@user_router.post("/signin", response_model=dict)
+async def sign_user_in(
+        user: UserSignIn,
+        session: Session = Depends(get_session)
+) -> dict:
+    # Находим пользователя по телефону
+    db_user = session.exec(
+        select(User).where(User.phone == user.phone)
+    ).first()
+
+    if not db_user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User does not exist"
         )
-    
-    #Проверка: правильный ли пароль
-    if user_data["password"] != user.password:
+
+    # Проверяем пароль
+    if db_user.password != user.password:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Wrong credential passed"
         )
-    
+
     return {
         "message": "User signed in successfully",
-        "user_id": user_data["id"]
+        "user_id": db_user.id
     }
 
-#Получение информации о всех пользователях
-@user_router.get("/all")
-async def get_all_users() -> dict:
-    
+
+# Получение информации о всех пользователях
+@user_router.get("/all", response_model=dict)
+async def get_all_users(
+        session: Session = Depends(get_session)
+) -> dict:
+
+    users = session.exec(select(User)).all()
+
+    # Преобразуем в безопасный формат (без паролей)
+    safe_users = []
+    for user in users:
+        safe_users.append({
+            "id": user.id,
+            "fio": user.fio,
+            "room": user.room,
+            "phone": user.phone
+        })
+
     return {
-        "total_users": len(users_db),
-        "users": list(users_db.values())
+        "users": safe_users
+    }
+
+
+# Получение информации о конкретном пользователе
+@user_router.get("/{user_id}", response_model=dict)
+async def get_user(
+        user_id: int,
+        session: Session = Depends(get_session)
+) -> dict:
+
+    user = session.get(User, user_id)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Возвращаем без пароля
+    return {
+        "user": {
+            "id": user.id,
+            "fio": user.fio,
+            "room": user.room,
+            "phone": user.phone
+        }
+    }
+
+
+# Удаление пользователя
+@user_router.delete("/{user_id}", response_model=dict)
+async def delete_user(
+        user_id: int,
+        session: Session = Depends(get_session)
+) -> dict:
+    from models.bookings import Booking
+
+    # Находим пользователя
+    user = session.get(User, user_id)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Находим и удаляем бронирования пользователя
+    bookings = session.exec(
+        select(Booking).where(Booking.user_id == user_id)
+    ).all()
+
+    # Удаляем бронирования
+    for booking in bookings:
+        session.delete(booking)
+
+    # Удаляем пользователя
+    session.delete(user)
+    session.commit()
+
+    # Создаем безопасную копию (без пароля)
+    deleted_user_info = {
+        "id": user.id,
+        "fio": user.fio,
+        "room": user.room,
+        "phone": user.phone
+    }
+
+    return {
+        "message": "User deleted successfully",
+        "deleted_user": deleted_user_info,
     }
