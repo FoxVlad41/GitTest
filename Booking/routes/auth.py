@@ -76,18 +76,16 @@ async def get_all_users(
 
     users = session.exec(select(User)).all()
 
-    # Преобразуем в безопасный формат (без паролей)
-    safe_users = []
+    susers = []
     for user in users:
-        safe_users.append({
+        susers.append({
             "id": user.id,
             "fio": user.fio,
-            "room": user.room,
             "phone": user.phone
         })
 
     return {
-        "users": safe_users
+        "users": susers
     }
 
 
@@ -111,7 +109,6 @@ async def get_user(
         "user": {
             "id": user.id,
             "fio": user.fio,
-            "room": user.room,
             "phone": user.phone
         }
     }
@@ -147,11 +144,10 @@ async def delete_user(
     session.delete(user)
     session.commit()
 
-    # Создаем безопасную копию (без пароля)
+    # Создаем безопасную копию
     deleted_user_info = {
         "id": user.id,
         "fio": user.fio,
-        "room": user.room,
         "phone": user.phone
     }
 
