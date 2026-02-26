@@ -1,11 +1,12 @@
 from fastapi import APIRouter, HTTPException, status, Depends
-from sqlmodel import Session, select
+from sqlmodel import Session, select, delete
 from datetime import datetime
 from collections import Counter
 
 from models.bookings import Booking, BookingCreate, BookingResponse, StatisticsResponse
 from models.users import User
 from database.connection import get_session
+from models.analytics import AnalyticsData
 
 bookings_router = APIRouter(
     tags=["Bookings"]
@@ -300,3 +301,71 @@ async def get_statistics(
         #machine_slot_statistics=machine_slot_stats,
         #total_bookings=total_bookings
     )
+
+
+# Новый маршрут для заполнения аналитической таблицы
+@bookings_router.post("/generate-analytics", response_model=dict)
+async def generate_analytics_data(
+        session: Session = Depends(get_session)
+) -> dict:
+    """
+    Генерирует денормализованные данные для аналитики
+    на основе существующих таблиц User и Booking
+    """
+
+    # Очищаем таблицу аналитики перед заполнением (чтобы не было дубликатов)
+    session.exec(delete(AnalyticsData))  # Добавьте импорт delete из sqlmodel
+
+    # Получаем все бронирования
+    bookings = session.exec(select(Booking)).all()
+
+    analytics_entries = []
+
+    for booking in bookings:
+        # Получаем пользователя для этого бронирования
+        user = session.get(User, booking.user_id)
+
+        # Преобразуем дату для анализа
+        dt = datetime.strptime(booking.date, "%d.%m.%Y")
+        day_of_week = dt.weekday()
+        month = dt.month
+        year = dt.year
+        is_weekend = day_of_week >= 5  # 5=суббота, 6=воскресенье
+
+        # Извлекаем начальный час из слота (например, 9 из "09:00-11:00")
+        hour_start = int(booking.time_slot.split(':')[0])
+
+        # Создаем полный datetime для Prophet
+        slot_datetime = dt.replace(hour=hour_start, minute=0, second=0)
+
+        # Создаем запись для аналитики
+        analytics_entry = AnalyticsData(
+            booking_id=booking.id,
+            booking_date=booking.date,
+            booking_time_slot=booking.time_slot,
+            booking_machine_number=booking.machine_number,
+            booking_created_at=booking.created_at,
+            user_id=user.id if user else None,
+            user_fio=user.fio if user else None,
+            user_phone=user.phone if user else None,
+            day_of_week=day_of_week,
+            hour_start=hour_start,
+            month=month,
+            year=year,
+            is_weekend=is_weekend,
+            slot_datetime=slot_datetime,
+            was_booked=True
+        )
+
+        analytics_entries.append(analytics_entry)
+
+    # Добавляем все записи в БД
+    for entry in analytics_entries:
+        session.add(entry)
+
+    session.commit()
+
+    return {
+        "message": "Analytics data generated successfully",
+        "entries_created": len(analytics_entries)
+    }
