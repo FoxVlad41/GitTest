@@ -1,12 +1,14 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from sqlmodel import Session, select, delete
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import Counter
 
 from models.bookings import Booking, BookingCreate, BookingResponse, StatisticsResponse
 from models.users import User
 from database.connection import get_session
 from models.analytics import AnalyticsData
+from models.discount import Discount, DiscountUpdate, DiscountResponse
+from services.forecast import SimpleForecast
 
 bookings_router = APIRouter(
     tags=["Bookings"]
@@ -27,26 +29,41 @@ def validate_date_format(date_str: str) -> bool:
         return False
 
 
-# Маршрут для получения доступных слотов
-@bookings_router.get("/slots")
-async def get_available_slots(
-        selected_date: str,
-        session: Session = Depends(get_session)
+@bookings_router.get("/slots-with-discounts")
+async def get_available_slots_with_discounts(
+    selected_date: str,
+    session: Session = Depends(get_session)
 ) -> dict:
-
+    """
+    Получить доступные слоты с информацией о скидках
+    (расширенная версия существующего /slots)
+    """
     if not validate_date_format(selected_date):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid date"
         )
-
+    
     # Получаем все брони на выбранную дату
     bookings = session.exec(
         select(Booking).where(Booking.date == selected_date)
     ).all()
-
+    
+    # Получаем скидки на эту дату
+    discounts = session.exec(
+        select(Discount).where(
+            Discount.date == selected_date,
+            Discount.is_active == True
+        )
+    ).all()
+    
+    # Создаем словарь скидок для быстрого доступа
+    discount_map = {}
+    for d in discounts:
+        discount_map[d.time_slot] = d.discount_percent
+    
     result = {}
-
+    
     for machine in MACHINE_NUMBERS:
         # Получаем занятые слоты для конкретной машины
         booked_slots = [
@@ -54,22 +71,35 @@ async def get_available_slots(
             for booking in bookings
             if booking.machine_number == machine
         ]
-
-        # Получаем свободные слоты для конкретной машины
-        available_slots = [
-            slot for slot in TIME_SLOTS
-            if slot not in booked_slots
-        ]
-
+        
+        # Получаем свободные слоты
+        available_slots = []
+        for slot in TIME_SLOTS:
+            if slot not in booked_slots:
+                slot_info = {
+                    "time_slot": slot,
+                    "is_available": True
+                }
+                
+                # Добавляем информацию о скидке
+                if slot in discount_map:
+                    slot_info["discount"] = discount_map[slot]
+                    slot_info["price_with_discount"] = f"со скидкой {discount_map[slot]}%"
+                else:
+                    slot_info["discount"] = 0
+                
+                available_slots.append(slot_info)
+        
         result[f"machine_{machine}"] = {
             "machine_number": machine,
             "available_slots": available_slots,
             "booked_slots": booked_slots,
         }
-
+    
     return {
         "date": selected_date,
         "machines": result,
+        "has_discounts": len(discounts) > 0
     }
 
 
@@ -369,3 +399,377 @@ async def generate_analytics_data(
         "message": "Analytics data generated successfully",
         "entries_created": len(analytics_entries)
     }
+
+# ================ МАРШРУТЫ ДЛЯ ПРОГНОЗИРОВАНИЯ ================
+
+@bookings_router.post("/forecast/apply-discounts", response_model=dict)
+async def forecast_and_apply_discounts(
+    request: dict,
+    session: Session = Depends(get_session)
+) -> dict:
+    """
+    Создает прогноз и применяет скидки на основе прогноза
+    
+    Тело запроса:
+    {
+        "date": "15.03.2025",           // дата для прогноза
+        "period": "day"                  // "day", "week", "month" - для прогноза на период
+    }
+    
+    Если period = "week" или "month", то date - начальная дата
+    """
+    date_str = request.get("date")
+    period = request.get("period", "day")
+    
+    if not date_str:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Не указана дата"
+        )
+    
+    # Проверяем формат даты
+    try:
+        datetime.strptime(date_str, "%d.%m.%Y")
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный формат даты. Используйте ДД.ММ.ГГГГ"
+        )
+    
+    # Создаем сервис прогнозирования
+    forecast = SimpleForecast(session)
+    
+    if period == "day":
+        # Прогноз на один день и применение скидок
+        result = forecast.apply_discounts_from_prediction(date_str)
+        
+        # Добавляем сам прогноз для информации
+        prediction = forecast.predict_date(date_str)
+        result["prediction"] = prediction
+        
+        return result
+        
+    elif period == "week":
+        # Прогноз на неделю
+        predictions = []
+        discounts_applied = 0
+        
+        dt = datetime.strptime(date_str, "%d.%m.%Y")
+        for i in range(7):
+            current_date = (dt + timedelta(days=i)).strftime("%d.%m.%Y")
+            
+            # Применяем скидки для каждого дня
+            discount_result = forecast.apply_discounts_from_prediction(current_date)
+            if "error" not in discount_result:
+                discounts_applied += discount_result.get("slots_with_discount", 0)
+            
+            # Получаем прогноз
+            pred = forecast.predict_date(current_date)
+            if "error" not in pred:
+                predictions.append({
+                    "date": current_date,
+                    "total_predicted": pred["total_predicted"]
+                })
+        
+        return {
+            "message": f"Скидки на неделю с {date_str} созданы",
+            "period": "week",
+            "start_date": date_str,
+            "end_date": (dt + timedelta(days=6)).strftime("%d.%m.%Y"),
+            "discounts_applied_total": discounts_applied,
+            "predictions": predictions
+        }
+        
+    elif period == "month":
+        # Прогноз на месяц (30 дней)
+        predictions = []
+        discounts_applied = 0
+        
+        dt = datetime.strptime(date_str, "%d.%m.%Y")
+        for i in range(30):
+            current_date = (dt + timedelta(days=i)).strftime("%d.%m.%Y")
+            
+            # Применяем скидки для каждого дня
+            discount_result = forecast.apply_discounts_from_prediction(current_date)
+            if "error" not in discount_result:
+                discounts_applied += discount_result.get("slots_with_discount", 0)
+            
+            # Получаем прогноз
+            pred = forecast.predict_date(current_date)
+            if "error" not in pred:
+                predictions.append({
+                    "date": current_date,
+                    "total_predicted": pred["total_predicted"]
+                })
+        
+        return {
+            "message": f"Скидки на месяц с {date_str} созданы",
+            "period": "month",
+            "start_date": date_str,
+            "end_date": (dt + timedelta(days=29)).strftime("%d.%m.%Y"),
+            "discounts_applied_total": discounts_applied,
+            "predictions": predictions
+        }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Неверный период. Используйте 'day', 'week' или 'month'"
+        )
+
+
+@bookings_router.get("/forecast/{date}", response_model=dict)
+async def get_forecast(
+    date: str,
+    session: Session = Depends(get_session)
+) -> dict:
+    """
+    Получить прогноз для конкретной даты (без применения скидок)
+    """
+    forecast = SimpleForecast(session)
+    result = forecast.predict_date(date)
+    
+    if "error" in result:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result["error"]
+        )
+    
+    return result
+
+
+@bookings_router.get("/forecast/week/{start_date}", response_model=dict)
+async def get_week_forecast(
+    start_date: str,
+    session: Session = Depends(get_session)
+) -> dict:
+    """
+    Получить прогноз на неделю (без применения скидок)
+    """
+    forecast = SimpleForecast(session)
+    result = forecast.predict_period(start_date, 7)
+    
+    if "error" in result:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result["error"]
+        )
+    
+    return result
+
+
+@bookings_router.get("/forecast/month/{start_date}", response_model=dict)
+async def get_month_forecast(
+    start_date: str,
+    session: Session = Depends(get_session)
+) -> dict:
+    """
+    Получить прогноз на месяц (без применения скидок)
+    """
+    forecast = SimpleForecast(session)
+    result = forecast.predict_period(start_date, 30)
+    
+    if "error" in result:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=result["error"]
+        )
+    
+    return result
+
+
+# ================ МАРШРУТЫ ДЛЯ УПРАВЛЕНИЯ СКИДКАМИ ================
+
+@bookings_router.get("/discounts", response_model=dict)
+async def get_discounts(
+    date: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    session: Session = Depends(get_session)
+) -> dict:
+    """
+    Получить список скидок
+    
+    Параметры:
+    - date: фильтр по дате (ДД.ММ.ГГГГ)
+    - is_active: фильтр по активности (true/false)
+    """
+    query = select(Discount)
+    
+    if date:
+        # Проверяем формат даты
+        try:
+            datetime.strptime(date, "%d.%m.%Y")
+            query = query.where(Discount.date == date)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Неверный формат даты"
+            )
+    
+    if is_active is not None:
+        query = query.where(Discount.is_active == is_active)
+    
+    # Сортируем по дате и времени
+    query = query.order_by(Discount.date, Discount.time_slot)
+    
+    discounts = session.exec(query).all()
+    
+    # Группируем по датам для удобства
+    by_date = {}
+    for d in discounts:
+        if d.date not in by_date:
+            by_date[d.date] = []
+        by_date[d.date].append({
+            "id": d.id,
+            "time_slot": d.time_slot,
+            "machine_number": d.machine_number,
+            "discount_percent": d.discount_percent,
+            "is_active": d.is_active,
+            "predicted_load": d.predicted_load
+        })
+    
+    return {
+        "total": len(discounts),
+        "by_date": by_date,
+        "discounts": [
+            {
+                "id": d.id,
+                "date": d.date,
+                "time_slot": d.time_slot,
+                "machine_number": d.machine_number,
+                "discount_percent": d.discount_percent,
+                "is_active": d.is_active,
+                "predicted_load": d.predicted_load
+            }
+            for d in discounts
+        ]
+    }
+
+
+@bookings_router.get("/discounts/{discount_id}", response_model=DiscountResponse)
+async def get_discount(
+    discount_id: int,
+    session: Session = Depends(get_session)
+) -> DiscountResponse:
+    """
+    Получить информацию о конкретной скидке
+    """
+    discount = session.get(Discount, discount_id)
+    
+    if not discount:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Скидка не найдена"
+        )
+    
+    return discount
+
+
+@bookings_router.put("/discounts/{discount_id}", response_model=dict)
+async def update_discount(
+    discount_id: int,
+    discount_update: DiscountUpdate,
+    session: Session = Depends(get_session)
+) -> dict:
+    """
+    Обновить скидку
+    """
+    discount = session.get(Discount, discount_id)
+    
+    if not discount:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Скидка не найдена"
+        )
+    
+    # Обновляем поля
+    discount.discount_percent = discount_update.discount_percent
+    discount.updated_at = datetime.now()
+    
+    if discount_update.is_active is not None:
+        discount.is_active = discount_update.is_active
+    
+    if discount_update.machine_number is not None:
+        discount.machine_number = discount_update.machine_number
+    
+    session.add(discount)
+    session.commit()
+    session.refresh(discount)
+    
+    return {
+        "message": "Скидка обновлена",
+        "discount": {
+            "id": discount.id,
+            "date": discount.date,
+            "time_slot": discount.time_slot,
+            "discount_percent": discount.discount_percent,
+            "is_active": discount.is_active
+        }
+    }
+
+
+@bookings_router.delete("/discounts/{discount_id}", response_model=dict)
+async def delete_discount(
+    discount_id: int,
+    session: Session = Depends(get_session)
+) -> dict:
+    """
+    Удалить скидку
+    """
+    discount = session.get(Discount, discount_id)
+    
+    if not discount:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Скидка не найдена"
+        )
+    
+    session.delete(discount)
+    session.commit()
+    
+    return {
+        "message": "Скидка удалена",
+        "deleted_id": discount_id
+    }
+
+
+@bookings_router.post("/discounts/clear", response_model=dict)
+async def clear_discounts(
+    date: Optional[str] = None,
+    session: Session = Depends(get_session)
+) -> dict:
+    """
+    Очистить скидки
+    
+    Параметры:
+    - date: удалить скидки только на указанную дату (если не указано - все скидки)
+    """
+    query = select(Discount)
+    
+    if date:
+        try:
+            datetime.strptime(date, "%d.%m.%Y")
+            query = query.where(Discount.date == date)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Неверный формат даты"
+            )
+    
+    discounts = session.exec(query).all()
+    count = len(discounts)
+    
+    for d in discounts:
+        session.delete(d)
+    
+    session.commit()
+    
+    if date:
+        return {
+            "message": f"Скидки на {date} удалены",
+            "deleted_count": count
+        }
+    else:
+        return {
+            "message": "Все скидки удалены",
+            "deleted_count": count
+        }
