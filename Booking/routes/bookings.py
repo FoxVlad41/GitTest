@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from sqlmodel import Session, select, delete
 from datetime import datetime, timedelta
 from collections import Counter
+from typing import List, Optional
 
 from models.bookings import Booking, BookingCreate, BookingResponse, StatisticsResponse
 from models.users import User
