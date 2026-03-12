@@ -571,10 +571,10 @@ def generate_by_period(users):
             input("\nНажмите Enter...")
             return
 
-        if start_date.year != 2025 or end_date.year != 2025:
-            print("\n❌ Ошибка: даты должны быть в 2025 году!")
-            input("\nНажмите Enter...")
-            return
+        #if start_date.year != 2025 or end_date.year != 2025:
+        #    print("\n❌ Ошибка: даты должны быть в 2025 году!")
+        #    input("\nНажмите Enter...")
+        #    return
 
         total_days = (end_date - start_date).days + 1
 

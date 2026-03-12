@@ -10,6 +10,7 @@ from database.connection import get_session
 from models.analytics import AnalyticsData
 from models.discount import Discount, DiscountUpdate, DiscountResponse
 from services.forecast import SimpleForecast
+from services.predictor import ProphetPredictor
 
 bookings_router = APIRouter(
     tags=["Bookings"]
@@ -32,24 +33,23 @@ def validate_date_format(date_str: str) -> bool:
 
 @bookings_router.get("/slots-with-discounts")
 async def get_available_slots_with_discounts(
-    selected_date: str,
-    session: Session = Depends(get_session)
+        selected_date: str,
+        session: Session = Depends(get_session)
 ) -> dict:
     """
     Получить доступные слоты с информацией о скидках
-    (расширенная версия существующего /slots)
     """
     if not validate_date_format(selected_date):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid date"
         )
-    
+
     # Получаем все брони на выбранную дату
     bookings = session.exec(
         select(Booking).where(Booking.date == selected_date)
     ).all()
-    
+
     # Получаем скидки на эту дату
     discounts = session.exec(
         select(Discount).where(
@@ -57,23 +57,21 @@ async def get_available_slots_with_discounts(
             Discount.is_active == True
         )
     ).all()
-    
-    # Создаем словарь скидок для быстрого доступа
+
+    # Создаем словарь скидок
     discount_map = {}
     for d in discounts:
         discount_map[d.time_slot] = d.discount_percent
-    
+
     result = {}
-    
+
     for machine in MACHINE_NUMBERS:
-        # Получаем занятые слоты для конкретной машины
         booked_slots = [
             booking.time_slot
             for booking in bookings
             if booking.machine_number == machine
         ]
-        
-        # Получаем свободные слоты
+
         available_slots = []
         for slot in TIME_SLOTS:
             if slot not in booked_slots:
@@ -81,28 +79,37 @@ async def get_available_slots_with_discounts(
                     "time_slot": slot,
                     "is_available": True
                 }
-                
-                # Добавляем информацию о скидке
+
                 if slot in discount_map:
                     slot_info["discount"] = discount_map[slot]
+                    slot_info["has_discount"] = True
                     slot_info["price_with_discount"] = f"со скидкой {discount_map[slot]}%"
                 else:
                     slot_info["discount"] = 0
-                
+                    slot_info["has_discount"] = False
+
                 available_slots.append(slot_info)
-        
+
         result[f"machine_{machine}"] = {
             "machine_number": machine,
             "available_slots": available_slots,
             "booked_slots": booked_slots,
         }
-    
+
+    # Получаем прогноз от Prophet для этой даты (для информации)
+    predictor = ProphetPredictor(session)
+    forecast = None
+    if predictor.load_model():
+        forecast = predictor.predict_date(selected_date)
+        if "error" in forecast:
+            forecast = None
+
     return {
         "date": selected_date,
         "machines": result,
-        "has_discounts": len(discounts) > 0
+        "has_discounts": len(discounts) > 0,
+        "prophet_forecast": forecast
     }
-
 
 # Создание бронирования
 @bookings_router.post("/book", response_model=dict)
@@ -403,31 +410,62 @@ async def generate_analytics_data(
 
 # ================ МАРШРУТЫ ДЛЯ ПРОГНОЗИРОВАНИЯ ================
 
-@bookings_router.post("/forecast/apply-discounts", response_model=dict)
-async def forecast_and_apply_discounts(
-    request: dict,
-    session: Session = Depends(get_session)
+# Маршрут для обучения модели Prophet
+@bookings_router.post("/prophet/train", response_model=dict)
+async def train_prophet_model(
+        force_retrain: bool = False,
+        session: Session = Depends(get_session)
 ) -> dict:
     """
-    Создает прогноз и применяет скидки на основе прогноза
-    
+    Обучает модель Prophet на исторических данных
+    """
+    predictor = ProphetPredictor(session)
+
+    try:
+        model = predictor.train(force_retrain=force_retrain)
+
+        # Получаем статистику данных
+        df = predictor.prepare_data()
+
+        return {
+            "message": "Модель Prophet успешно обучена",
+            "data_points": len(df),
+            "date_range": {
+                "from": df['ds'].min().strftime('%d.%m.%Y'),
+                "to": df['ds'].max().strftime('%d.%m.%Y')
+            } if not df.empty else None
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при обучении модели: {str(e)}"
+        )
+
+
+# Маршрут для прогноза с Prophet
+@bookings_router.post("/prophet/forecast", response_model=dict)
+async def prophet_forecast(
+        request: dict,
+        session: Session = Depends(get_session)
+) -> dict:
+    """
+    Прогноз с использованием Prophet и применение скидок
+
     Тело запроса:
     {
-        "date": "15.03.2025",           // дата для прогноза
-        "period": "day"                  // "day", "week", "month" - для прогноза на период
+        "date": "15.03.2026","period": "day","apply_discounts": true
     }
-    
-    Если period = "week" или "month", то date - начальная дата
     """
     date_str = request.get("date")
     period = request.get("period", "day")
-    
+    apply_discounts = request.get("apply_discounts", True)
+
     if not date_str:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Не указана дата"
         )
-    
+
     # Проверяем формат даты
     try:
         datetime.strptime(date_str, "%d.%m.%Y")
@@ -436,81 +474,59 @@ async def forecast_and_apply_discounts(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Неверный формат даты. Используйте ДД.ММ.ГГГГ"
         )
-    
-    # Создаем сервис прогнозирования
-    forecast = SimpleForecast(session)
-    
+
+    predictor = ProphetPredictor(session)
+
+    # Проверяем, есть ли модель
+    if not predictor.load_model():
+        # Если нет, обучаем
+        try:
+            predictor.train()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Нет обученной модели. Ошибка при обучении: {str(e)}"
+            )
+
     if period == "day":
-        # Прогноз на один день и применение скидок
-        result = forecast.apply_discounts_from_prediction(date_str)
-        
-        # Добавляем сам прогноз для информации
-        prediction = forecast.predict_date(date_str)
-        result["prediction"] = prediction
-        
+        if apply_discounts:
+            result = predictor.apply_discounts_from_prediction(date_str)
+        else:
+            result = predictor.predict_date(date_str)
+
         return result
-        
+
     elif period == "week":
         # Прогноз на неделю
-        predictions = []
-        discounts_applied = 0
-        
-        dt = datetime.strptime(date_str, "%d.%m.%Y")
-        for i in range(7):
-            current_date = (dt + timedelta(days=i)).strftime("%d.%m.%Y")
-            
+        if apply_discounts:
             # Применяем скидки для каждого дня
-            discount_result = forecast.apply_discounts_from_prediction(current_date)
-            if "error" not in discount_result:
-                discounts_applied += discount_result.get("slots_with_discount", 0)
-            
-            # Получаем прогноз
-            pred = forecast.predict_date(current_date)
-            if "error" not in pred:
-                predictions.append({
-                    "date": current_date,
-                    "total_predicted": pred["total_predicted"]
-                })
-        
-        return {
-            "message": f"Скидки на неделю с {date_str} созданы",
-            "period": "week",
-            "start_date": date_str,
-            "end_date": (dt + timedelta(days=6)).strftime("%d.%m.%Y"),
-            "discounts_applied_total": discounts_applied,
-            "predictions": predictions
-        }
-        
+            discounts_applied = 0
+            dt = datetime.strptime(date_str, "%d.%m.%Y")
+
+            for i in range(7):
+                current_date = (dt + timedelta(days=i)).strftime("%d.%m.%Y")
+                discount_result = predictor.apply_discounts_from_prediction(current_date)
+                if "error" not in discount_result:
+                    discounts_applied += discount_result.get("slots_with_discount", 0)
+
+        # Получаем прогноз
+        result = predictor.predict_period(date_str, 7)
+        return result
+
     elif period == "month":
-        # Прогноз на месяц (30 дней)
-        predictions = []
-        discounts_applied = 0
-        
-        dt = datetime.strptime(date_str, "%d.%m.%Y")
-        for i in range(30):
-            current_date = (dt + timedelta(days=i)).strftime("%d.%m.%Y")
-            
-            # Применяем скидки для каждого дня
-            discount_result = forecast.apply_discounts_from_prediction(current_date)
-            if "error" not in discount_result:
-                discounts_applied += discount_result.get("slots_with_discount", 0)
-            
-            # Получаем прогноз
-            pred = forecast.predict_date(current_date)
-            if "error" not in pred:
-                predictions.append({
-                    "date": current_date,
-                    "total_predicted": pred["total_predicted"]
-                })
-        
-        return {
-            "message": f"Скидки на месяц с {date_str} созданы",
-            "period": "month",
-            "start_date": date_str,
-            "end_date": (dt + timedelta(days=29)).strftime("%d.%m.%Y"),
-            "discounts_applied_total": discounts_applied,
-            "predictions": predictions
-        }
+        # Прогноз на месяц
+        if apply_discounts:
+            discounts_applied = 0
+            dt = datetime.strptime(date_str, "%d.%m.%Y")
+
+            for i in range(30):
+                current_date = (dt + timedelta(days=i)).strftime("%d.%m.%Y")
+                discount_result = predictor.apply_discounts_from_prediction(current_date)
+                if "error" not in discount_result:
+                    discounts_applied += discount_result.get("slots_with_discount", 0)
+
+        result = predictor.predict_period(date_str, 30)
+        return result
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -518,65 +534,31 @@ async def forecast_and_apply_discounts(
         )
 
 
-@bookings_router.get("/forecast/{date}", response_model=dict)
-async def get_forecast(
-    date: str,
-    session: Session = Depends(get_session)
+# Маршрут для получения информации о модели
+@bookings_router.get("/prophet/info", response_model=dict)
+async def prophet_info(
+        session: Session = Depends(get_session)
 ) -> dict:
     """
-    Получить прогноз для конкретной даты (без применения скидок)
+    Информация о модели Prophet
     """
-    forecast = SimpleForecast(session)
-    result = forecast.predict_date(date)
-    
-    if "error" in result:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result["error"]
-        )
-    
-    return result
+    predictor = ProphetPredictor(session)
+    model_exists = predictor.load_model()
 
-
-@bookings_router.get("/forecast/week/{start_date}", response_model=dict)
-async def get_week_forecast(
-    start_date: str,
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    Получить прогноз на неделю (без применения скидок)
-    """
-    forecast = SimpleForecast(session)
-    result = forecast.predict_period(start_date, 7)
-    
-    if "error" in result:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result["error"]
-        )
-    
-    return result
-
-
-@bookings_router.get("/forecast/month/{start_date}", response_model=dict)
-async def get_month_forecast(
-    start_date: str,
-    session: Session = Depends(get_session)
-) -> dict:
-    """
-    Получить прогноз на месяц (без применения скидок)
-    """
-    forecast = SimpleForecast(session)
-    result = forecast.predict_period(start_date, 30)
-    
-    if "error" in result:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result["error"]
-        )
-    
-    return result
-
+    if model_exists:
+        return {
+            "status": "active",
+            "model": "Prophet",
+            "seasonalities": ["yearly", "weekly", "daily", "monthly"],
+            "holidays": "russian_holidays",
+            "data_available": True
+        }
+    else:
+        return {
+            "status": "not_trained",
+            "model": "Prophet",
+            "message": "Модель не обучена. Выполните POST /prophet/train"
+        }
 
 # ================ МАРШРУТЫ ДЛЯ УПРАВЛЕНИЯ СКИДКАМИ ================
 
