@@ -1,13 +1,19 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from database.connection import create_db_and_tables
 from routes.auth import user_router
 from routes.bookings import bookings_router
+from routes.analytics_crud import analytics_crud_router
 
-app = FastAPI(title="Cервис бронирования в прачечной", version="1.0.0")
+app = FastAPI(title="Сервис бронирования в прачечной", version="2.0.0")
 
-# Регистрируем маршруты
+# Подключаем статические файлы
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Регистрируем маршруты API
 app.include_router(user_router, prefix="/auth")
 app.include_router(bookings_router, prefix="/bookings")
+app.include_router(analytics_crud_router)
 
 
 @app.on_event("startup")
@@ -18,7 +24,8 @@ def on_startup():
 
 @app.get("/")
 async def root():
-    return {"message": "Сервис бронирования стиральной машины"}
+    from fastapi.responses import FileResponse
+    return FileResponse("static/index.html")
 
 
 if __name__ == "__main__":
