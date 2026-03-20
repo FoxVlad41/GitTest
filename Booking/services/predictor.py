@@ -84,7 +84,7 @@ class ProphetPredictor:
             full_range = pd.date_range(
                 start=df['ds'].min(),
                 end=df['ds'].max(),
-                freq='H'
+                freq='h'
             )
             df = df.set_index('ds').reindex(full_range, fill_value=0).reset_index()
             df.columns = ['ds', 'y']
@@ -167,7 +167,7 @@ class ProphetPredictor:
         try:
             # Создаем DataFrame с часами для целевой даты
             future = pd.DataFrame({
-                'ds': pd.date_range(start=dt, end=dt + timedelta(days=1), freq='H')[:-1]
+                'ds': pd.date_range(start=dt, end=dt + timedelta(days=1), freq='h')[:-1]
             })
 
             # Делаем прогноз
