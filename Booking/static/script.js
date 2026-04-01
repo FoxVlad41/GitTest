@@ -9,6 +9,26 @@ document.addEventListener('DOMContentLoaded', () => {
     loadInitialData();
 });
 
+// Проверка соединения с API
+async function checkApiConnection() {
+    try {
+        const response = await fetch(`${API_BASE}/`);
+        if (response.ok) {
+            console.log('✅ API connection OK');
+            return true;
+        } else {
+            console.error('❌ API returned status:', response.status);
+            return false;
+        }
+    } catch (error) {
+        console.error('❌ Cannot connect to API:', error);
+        return false;
+    }
+}
+
+// Вызвать при загрузке
+checkApiConnection();
+
 // Настройка обработчиков событий
 function setupEventListeners() {
     // Вкладки
@@ -420,9 +440,18 @@ async function getForecast() {
     resultDiv.innerHTML = '<div class="loading">Загрузка прогноза...</div>';
 
     try {
+        console.log('Sending forecast request:', {
+            date: formattedDate,
+            period: period,
+            apply_discounts: applyDiscounts
+        });
+
         const response = await fetch(`${API_BASE}/bookings/prophet/forecast`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
             body: JSON.stringify({
                 date: formattedDate,
                 period: period,
@@ -430,56 +459,236 @@ async function getForecast() {
             })
         });
 
-        const data = await response.json();
-
-        if (response.ok) {
-            renderForecast(data, period);
-        } else {
-            resultDiv.innerHTML = `<div class="error">${data.detail || 'Ошибка получения прогноза'}</div>`;
+        console.log('Response status:', response.status);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.log('Error response:', errorText);
+            try {
+                const errorData = JSON.parse(errorText);
+                resultDiv.innerHTML = `<div class="error">❌ ${errorData.detail || 'Ошибка получения прогноза'}</div>`;
+            } catch {
+                resultDiv.innerHTML = `<div class="error">❌ Ошибка ${response.status}: ${response.statusText}</div>`;
+            }
+            return;
         }
+
+        const data = await response.json();
+        console.log('Forecast data received:', data);
+        
+        if (data.error) {
+            resultDiv.innerHTML = `<div class="error">❌ ${data.error}</div>`;
+            return;
+        }
+        
+        // Проверяем структуру ответа и рендерим соответственно
+        renderForecast(data, period);
+        
     } catch (error) {
-        resultDiv.innerHTML = '<div class="error">Ошибка соединения</div>';
+        console.error('Connection error:', error);
+        resultDiv.innerHTML = '<div class="error">❌ Ошибка соединения с сервером. Проверьте, запущен ли сервер (http://127.0.0.1:8000)</div>';
     }
 }
 
 // Отображение прогноза
 function renderForecast(data, period) {
-    const resultDiv = document.getElementById('forecastResult');
-    if (period === 'day') {
-        // Прогноз на один день
-        let html = `
-            <div class="forecast-day">
-                <h4>${data.date} (${data.day_of_week})</h4>
-                <div class="forecast-total">Всего прогноз: ${data.total_predicted} броней</div>
-        `;
+    const resultDiv = document.getElementById('forecastResult'); 
+    if (!data) {
+        resultDiv.innerHTML = '<div class="error">❌ Нет данных от сервера</div>';
+        return;
+    }
 
-        data.slots.forEach(slot => {
+    console.log('Rendering forecast. Period:', period);
+    console.log('Data received:', data);
+    
+    let html = '';
+    
+    if (period === 'day') {
+        // Определяем, в каком формате пришли данные
+        let predictionData = data;
+        let discounts = [];
+        
+        // Если есть поле prediction, значит это формат со скидками
+        if (data.prediction) {
+            predictionData = data.prediction;
+            discounts = data.discounts_created || [];
+        }
+        
+        // Проверяем, что есть слоты
+        if (predictionData.slots && Array.isArray(predictionData.slots)) {
+            const pred = predictionData;
+            
+            // Создаем карту скидок для быстрого доступа
+            const discountMap = {};
+            discounts.forEach(d => {
+                discountMap[d.time_slot] = d.discount;
+            });
+            
+            // Определяем общее количество прогноза
+            const totalPredicted = pred.total_predicted || 
+                                   pred.slots.reduce((sum, slot) => sum + (slot.predicted_bookings || 0), 0).toFixed(2);
+            
+            html = `
+                <div class="forecast-card">
+                    <div class="forecast-header">
+                        <h3>Прогноз на ${pred.date || data.date || 'неизвестную дату'}</h3>
+                        <div class="forecast-day-info">${pred.day_of_week || ''}</div>
+                    </div>
+                    
+                    <div class="forecast-summary">
+                        <div class="summary-item">
+                            <span class="summary-label">Всего прогноз:</span>
+                            <span class="summary-value">${totalPredicted} броней</span>
+                        </div>
+                        ${data.slots_with_discount ? `
+                        <div class="summary-item">
+                            <span class="summary-label">Скидок применено:</span>
+                            <span class="summary-value">${data.slots_with_discount} слотов</span>
+                        </div>
+                        ` : ''}
+                    </div>
+                    
+                    <div class="forecast-slots">
+            `;
+
+            pred.slots.forEach(slot => {
+                const loadClass = slot.load_level || 'medium';
+                const discount = discountMap[slot.time_slot];
+                
+                // Определяем цвет фона в зависимости от загрузки
+                let bgColor = '';
+                if (loadClass === 'high') bgColor = '#fed7d7';
+                else if (loadClass === 'medium') bgColor = '#feebc8';
+                else bgColor = '#c6f6d5';
+                
+                // Определяем границы доверительного интервала
+                const bounds = (slot.lower_bound !== undefined && slot.upper_bound !== undefined) 
+                    ? `(${slot.lower_bound}-${slot.upper_bound})` 
+                    : '';
+                
+                html += `
+                    <div class="forecast-slot" style="background-color: ${bgColor}; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid ${loadClass === 'high' ? '#f56565' : loadClass === 'medium' ? '#ed8936' : '#48bb78'}">
+                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                            <div style="flex: 1;">
+                                <strong style="font-size: 16px;">${slot.time_slot}</strong>
+                                <div style="font-size: 14px; color: #4a5568; margin-top: 5px;">
+                                    <div>Прогноз: ${slot.predicted_bookings} броней ${bounds}</div>
+                                    ${slot.lower_bound !== undefined ? `
+                                    <div style="font-size: 12px; color: #718096;">
+                                        Доверительный интервал: ${slot.lower_bound.toFixed(2)} - ${slot.upper_bound.toFixed(2)}
+                                    </div>
+                                    ` : ''}
+                                </div>
+                            </div>
+                            <div style="text-align: right; min-width: 150px;">
+                                <div style="font-size: 20px; font-weight: bold; color: ${loadClass === 'high' ? '#c53030' : loadClass === 'medium' ? '#b7791f' : '#2f8555'}">
+                                    ${slot.occupancy_percent}% загрузка
+                                </div>
+                                ${discount ? `
+                                    <div style="background: #fbbf24; padding: 5px 15px; border-radius: 20px; font-weight: bold; margin-top: 8px; display: inline-block;">
+                                        🔥 Скидка -${discount}%
+                                    </div>
+                                ` : data.apply_discounts === false ? `
+                                    <div style="background: #e2e8f0; padding: 5px 15px; border-radius: 20px; margin-top: 8px; display: inline-block; color: #718096;">
+                                        Без скидки
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
             html += `
-                <div class="forecast-slot ${slot.load_level}">
-                    <span>${slot.time_slot}</span>
-                    <span>${slot.predicted_bookings} броней (${slot.occupancy_percent}%)</span>
+                    </div>
+                    
+                    <div class="forecast-footer" style="margin-top: 25px; padding: 15px; background: #f7fafc; border-radius: 8px; font-size: 14px; color: #4a5568;">
+                        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                            <div><strong>Метод:</strong> ${data.model_info?.type || pred.model_info?.type || 'Prophet'}</div>
+                            <div><strong>Всего слотов:</strong> ${pred.slots.length}</div>
+                            ${data.used_fallback !== undefined ? `<div><strong>Fallback:</strong> ${data.used_fallback ? 'Да' : 'Нет'}</div>` : ''}
+                        </div>
+                        ${data.message ? `<div style="margin-top: 10px; color: #48bb78;">✅ ${data.message}</div>` : ''}
+                    </div>
                 </div>
             `;
-        });
-
-        html += `</div>`;
-        resultDiv.innerHTML = html;
+            
+        } else {
+            // Если структура не распознана, покажем сырые данные
+            html = `
+                <div class="error" style="background: #fff5f5; padding: 20px; border-radius: 8px;">
+                    <h4 style="color: #c53030; margin-bottom: 10px;">❌ Неизвестная структура данных</h4>
+                    <p>Получен ответ от сервера, но он не содержит ожидаемых полей.</p>
+                    <pre style="background: #f7fafc; padding: 15px; border-radius: 5px; overflow-x: auto; margin-top: 15px;">${JSON.stringify(data, null, 2)}</pre>
+                </div>
+            `;
+        }
     } else {
         // Прогноз на неделю/месяц
-        let html = `<h3>Прогноз на ${data.period}</h3>`;
-        html += `<p>Всего прогноз: ${data.total_predicted} броней</p>`;
-        html += `<p>В среднем в день: ${data.avg_per_day} броней</p>`;
+        if (data.predictions && Array.isArray(data.predictions)) {
+            html = `
+                <div class="forecast-period-card">
+                    <h3 style="color: #2d3748; margin-bottom: 20px;">📊 Прогноз на ${data.period || period}</h3>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0;">
+                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px;">
+                            <div style="font-size: 14px; opacity: 0.9;">Всего прогноз</div>
+                            <div style="font-size: 32px; font-weight: bold;">${data.total_predicted}</div>
+                        </div>
+                        <div style="background: linear-gradient(135deg, #48bb78 0%, #2f8555 100%); color: white; padding: 20px; border-radius: 10px;">
+                            <div style="font-size: 14px; opacity: 0.9;">В среднем в день</div>
+                            <div style="font-size: 32px; font-weight: bold;">${data.avg_per_day}</div>
+                        </div>
+                    </div>
+                    
+                    <h4 style="color: #4a5568; margin: 20px 0 10px;">📅 Прогноз по дням:</h4>
+                    <div style="display: grid; gap: 10px;">
+            `;
 
-        data.predictions.forEach(day => {
+            data.predictions.forEach(day => {
+                const percentOfAvg = ((day.total_predicted / data.avg_per_day) * 100).toFixed(0);
+                html += `
+                    <div style="background: #f7fafc; padding: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${day.total_predicted > data.avg_per_day ? '#48bb78' : '#f56565'}">
+                        <div>
+                            <strong style="font-size: 16px;">${day.date}</strong>
+                            <span style="margin-left: 10px; color: #718096; font-size: 14px;">${day.day_of_week || ''}</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-weight: bold; font-size: 18px; color: ${day.total_predicted > data.avg_per_day ? '#2f8555' : '#c53030'}">
+                                ${day.total_predicted} броней
+                            </div>
+                            <div style="font-size: 12px; color: #718096;">
+                                ${percentOfAvg}% от среднего
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
             html += `
-                <div class="forecast-day">
-                    <h4>${day.date} (${day.day_of_week}) - ${day.total_predicted} броней</h4>
+                    </div>
+                    
+                    ${data.fallback_used !== undefined ? `
+                    <div style="margin-top: 20px; padding: 15px; background: #f7fafc; border-radius: 8px; display: flex; gap: 20px; font-size: 14px;">
+                        <div><strong>Prophet:</strong> ${data.prophet_used} дней</div>
+                        <div><strong>Fallback:</strong> ${data.fallback_used} дней</div>
+                        <div><strong>Точность:</strong> ${((data.prophet_used / data.days) * 100).toFixed(1)}%</div>
+                    </div>
+                    ` : ''}
                 </div>
             `;
-        });
-
-        resultDiv.innerHTML = html;
+            
+        } else {
+            html = `
+                <div class="error" style="background: #fff5f5; padding: 20px; border-radius: 8px;">
+                    <h4 style="color: #c53030;">❌ Неверный формат данных для прогноза на период</h4>
+                    <pre style="background: #f7fafc; padding: 15px; border-radius: 5px; margin-top: 10px;">${JSON.stringify(data, null, 2)}</pre>
+                </div>
+            `;
+        }
     }
+    
+    resultDiv.innerHTML = html;
 }
 
 // Загрузка скидок
@@ -588,20 +797,26 @@ async function deleteDiscount(discountId) {
 async function clearAllDiscounts() {
     if (!confirm('Вы уверены, что хотите удалить ВСЕ скидки?')) return;
     try {
-        const response = await fetch(`${API_BASE}/bookings/discounts/clear/all?confirm=true`, {
-            method: 'DELETE'
+        const response = await fetch(`${API_BASE}/bookings/discounts/clear`, {
+            method: 'POST',  // Ваш маршрут использует POST, не DELETE
+            headers: {
+                'Content-Type': 'application/json',
+                'accept': 'application/json'
+            }
+            // Не отправляем date, чтобы удалить все
         });
 
         const data = await response.json();
 
         if (response.ok) {
-            showNotification(`Удалено ${data.deleted_count} скидок`, 'success');
-            loadDiscounts();
+            showNotification(`✅ ${data.message}. Удалено: ${data.deleted_count}`, 'success');
+            loadDiscounts(); // Обновляем список скидок
         } else {
-            showNotification(data.detail || 'Ошибка при удалении', 'error');
+            showNotification(`❌ ${data.detail || 'Ошибка при удалении'}`, 'error');
         }
     } catch (error) {
-        showNotification('Ошибка соединения', 'error');
+        console.error('Error clearing discounts:', error);
+        showNotification('❌ Ошибка соединения с сервером', 'error');
     }
 }
 

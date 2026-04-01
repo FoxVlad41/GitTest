@@ -154,8 +154,8 @@ class SimpleForecast:
         # Получаем все исторические данные
         df = self.get_historical_data(target_date)
 
-        if df.empty:
-            return self._get_default_prediction(target_date, "Нет исторических данных")
+        #if df.empty:
+        #   return self._get_default_prediction(target_date, "Нет исторических данных")
 
         # Рассчитываем общую статистику по слотам
         slot_stats = self.calculate_slot_statistics(df)
