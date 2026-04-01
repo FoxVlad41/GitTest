@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from sqlmodel import Session, select
+from pydantic import BaseModel
 
 from models.users import User, UserSignIn, UserResponse
 from database.connection import get_session
@@ -64,7 +65,9 @@ async def sign_user_in(
 
     return {
         "message": "User signed in successfully",
-        "user_id": db_user.id
+        "user_id": db_user.id,
+        "is_admin": db_user.is_admin,
+        "fio": db_user.fio
     }
 
 
@@ -154,4 +157,43 @@ async def delete_user(
     return {
         "message": "User deleted successfully",
         "deleted_user": deleted_user_info,
+    }
+
+
+class MakeAdminRequest(BaseModel):
+    admin_user_id: int
+    target_user_id: int
+    is_admin: bool
+
+
+@user_router.patch("/make-admin", response_model=dict)
+async def make_user_admin(
+        request: MakeAdminRequest,
+        session: Session = Depends(get_session)
+):
+    # Проверяем, что текущий пользователь (admin_user_id) является администратором
+    admin_user = session.get(User, request.admin_user_id)
+    if not admin_user or not admin_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admin can perform this action"
+        )
+
+    target_user = session.get(User, request.target_user_id)
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Обновляем поле is_admin
+    target_user.is_admin = request.is_admin
+    session.add(target_user)
+    session.commit()
+    session.refresh(target_user)
+
+    return {
+        "message": f"User {target_user.fio} admin status set to {request.is_admin}",
+        "user_id": target_user.id,
+        "is_admin": target_user.is_admin
     }

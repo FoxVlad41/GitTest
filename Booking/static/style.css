@@ -476,3 +476,10 @@ header {
         align-items: stretch;
     }
 }
+.success {
+    color: #48bb78;
+    background: #c6f6d5;
+    padding: 10px;
+    border-radius: 5px;
+    margin-top: 10px;
+}

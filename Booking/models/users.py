@@ -6,13 +6,15 @@ class User(SQLModel, table=True):
     fio: str = Field(index=True)
     phone: str = Field(unique=True, index=True)
     password: str
+    is_admin: bool = Field(default=False)
 
     class Config:
         json_schema_extra = {
             "example": {
                 "fio": "Иванов Иван Иванович",
                 "phone": "+79161234567",
-                "password": "password123"
+                "password": "password123",
+                "is_admin": False
             }
         }
 

@@ -1,172 +1,241 @@
 <!DOCTYPE html>
 <html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Прачечная - бронирование стиральных машин</title>
-    <link rel="stylesheet" href="/static/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
-</head>
-<body>
+    <link rel="stylesheet" href="/static/style.css" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
     <div class="container">
-        <!-- Шапка -->
-        <header>
-            <div class="logo">
-                <h1>🧼 Прачечная</h1>
-                <p>Бронирование стиральных машин</p>
-            </div>
-            <div class="auth-status" id="authStatus">
-                <span id="userDisplay">Не авторизован</span>
-                <button id="loginBtn" class="btn btn-primary">Войти</button>
-                <button id="logoutBtn" class="btn btn-secondary" style="display: none;">Выйти</button>
-            </div>
-        </header>
+      <!-- Шапка -->
+      <header>
+        <div class="logo">
+          <h1>🧼 Прачечная</h1>
+          <p>Бронирование стиральных машин</p>
+        </div>
+        <div class="auth-status" id="authStatus">
+          <span id="userDisplay">Не авторизован</span>
+          <button id="loginBtn" class="btn btn-primary">Войти</button>
+          <button
+            id="logoutBtn"
+            class="btn btn-secondary"
+            style="display: none"
+          >
+            Выйти
+          </button>
+        </div>
+      </header>
 
-        <!-- Основное содержимое -->
-        <main>
-            <!-- Вкладки -->
-            <div class="tabs">
-                <button class="tab-btn active" data-tab="booking">📅 Бронирование</button>
-                <button class="tab-btn" data-tab="myBookings">📋 Мои брони</button>
-                <button class="tab-btn" data-tab="forecast">📊 Прогноз</button>
-                <button class="tab-btn" data-tab="discounts">🏷️ Скидки</button>
-                <button class="tab-btn" data-tab="admin" id="adminTab" style="display: none;">⚙️ Администрирование</button>
-            </div>
-
-            <!-- Вкладка: Бронирование -->
-            <div id="bookingTab" class="tab-content active">
-                <div class="date-selector">
-                    <label for="bookingDate">Выберите дату:</label>
-                    <input type="date" id="bookingDate" value="2026-03-20">
-                    <button id="checkSlotsBtn" class="btn btn-primary">Показать слоты</button>
-                </div>
-
-                <div id="slotsContainer" class="slots-container">
-                    <div class="loading">Выберите дату для просмотра слотов</div>
-                </div>
-            </div>
-
-            <!-- Вкладка: Мои брони -->
-            <div id="myBookingsTab" class="tab-content">
-                <div id="myBookingsList" class="bookings-list">
-                    <div class="loading">Войдите в систему для просмотра броней</div>
-                </div>
-            </div>
-
-            <!-- Вкладка: Прогноз -->
-            <div id="forecastTab" class="tab-content">
-                <div class="forecast-controls">
-                    <label for="forecastDate">Дата для прогноза:</label>
-                    <input type="date" id="forecastDate" value="2026-03-20">
-                    
-                    <label for="forecastPeriod">Период:</label>
-                    <select id="forecastPeriod">
-                        <option value="day">Один день</option>
-                        <option value="week">Неделя</option>
-                        <option value="month">Месяц</option>
-                    </select>
-                    
-                    <label>
-                        <input type="checkbox" id="applyDiscounts" checked>
-                        Применить скидки автоматически
-                    </label>
-                    
-                    <button id="getForecastBtn" class="btn btn-primary">Получить прогноз</button>
-                </div>
-
-                <div id="forecastResult" class="forecast-result"></div>
-            </div>
-
-            <!-- Вкладка: Скидки -->
-            <div id="discountsTab" class="tab-content">
-                <div class="discounts-controls">
-                    <label for="discountDateFilter">Фильтр по дате:</label>
-                    <input type="date" id="discountDateFilter">
-                    <button id="filterDiscountsBtn" class="btn btn-primary">Показать</button>
-                    <button id="clearAllDiscountsBtn" class="btn btn-danger">Очистить все скидки</button>
-                </div>
-
-                <div id="discountsList" class="discounts-list"></div>
-            </div>
-
-            <!-- Вкладка: Администрирование -->
-            <div id="adminTab" class="tab-content">
-                <div class="admin-section">
-                    <h3>Управление моделью Prophet</h3>
-                    <button id="trainModelBtn" class="btn btn-primary">Обучить модель</button>
-                    <button id="checkModelBtn" class="btn btn-secondary">Статус модели</button>
-                    <div id="modelStatus"></div>
-                </div>
-
-                <div class="admin-section">
-                    <h3>Управление данными</h3>
-                    <button id="clearAnalyticsBtn" class="btn btn-danger">Очистить аналитику</button>
-                    <div id="adminResult"></div>
-                </div>
-            </div>
-        </main>
-
-        <!-- Модальное окно для входа -->
-        <div id="loginModal" class="modal">
-            <div class="modal-content">
-                <span class="close">&times;</span>
-                <h2>Вход в систему</h2>
-                
-                <div class="form-group">
-                    <label for="loginPhone">Телефон:</label>
-                    <input type="text" id="loginPhone" placeholder="+79001234567">
-                </div>
-                
-                <div class="form-group">
-                    <label for="loginPassword">Пароль:</label>
-                    <input type="password" id="loginPassword" placeholder="********">
-                </div>
-                
-                <div class="form-actions">
-                    <button id="loginSubmitBtn" class="btn btn-primary">Войти</button>
-                    <button id="showRegisterBtn" class="btn btn-link">Регистрация</button>
-                </div>
-                
-                <div id="loginError" class="error-message"></div>
-            </div>
+      <!-- Основное содержимое -->
+      <main>
+        <!-- Вкладки -->
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="booking">
+            📅 Бронирование
+          </button>
+          <button class="tab-btn" data-tab="myBookings">📋 Мои брони</button>
+          <button class="tab-btn" data-tab="forecast" style="display: none">
+            📊 Прогноз
+          </button>
+          <button class="tab-btn" data-tab="discounts" style="display: none">
+            🏷️ Скидки
+          </button>
+          <button
+            class="tab-btn"
+            data-tab="admin"
+            id="adminTab"
+            style="display: none"
+          >
+            ⚙️ Администрирование
+          </button>
         </div>
 
-        <!-- Модальное окно для регистрации -->
-        <div id="registerModal" class="modal">
-            <div class="modal-content">
-                <span class="close">&times;</span>
-                <h2>Регистрация</h2>
-                
-                <div class="form-group">
-                    <label for="registerFio">ФИО:</label>
-                    <input type="text" id="registerFio" placeholder="Иванов Иван Иванович">
-                </div>
-                
-                <div class="form-group">
-                    <label for="registerPhone">Телефон:</label>
-                    <input type="text" id="registerPhone" placeholder="+79001234567">
-                </div>
-                
-                <div class="form-group">
-                    <label for="registerPassword">Пароль:</label>
-                    <input type="password" id="registerPassword" placeholder="********">
-                </div>
-                
-                <div class="form-group">
-                    <label for="registerConfirmPassword">Подтверждение:</label>
-                    <input type="password" id="registerConfirmPassword" placeholder="********">
-                </div>
-                
-                <div class="form-actions">
-                    <button id="registerSubmitBtn" class="btn btn-primary">Зарегистрироваться</button>
-                    <button id="backToLoginBtn" class="btn btn-link">Назад ко входу</button>
-                </div>
-                
-                <div id="registerError" class="error-message"></div>
-            </div>
+        <!-- Вкладка: Бронирование -->
+        <div id="bookingTab" class="tab-content active">
+          <div class="date-selector">
+            <label for="bookingDate">Выберите дату:</label>
+            <input type="date" id="bookingDate" value="2026-03-20" />
+            <button id="checkSlotsBtn" class="btn btn-primary">
+              Показать слоты
+            </button>
+          </div>
+
+          <div id="slotsContainer" class="slots-container">
+            <div class="loading">Выберите дату для просмотра слотов</div>
+          </div>
         </div>
+
+        <!-- Вкладка: Мои брони -->
+        <div id="myBookingsTab" class="tab-content">
+          <div id="myBookingsList" class="bookings-list">
+            <div class="loading">Войдите в систему для просмотра броней</div>
+          </div>
+        </div>
+
+        <!-- Вкладка: Прогноз -->
+        <div id="forecastTab" class="tab-content">
+          <div class="forecast-controls">
+            <label for="forecastDate">Дата для прогноза:</label>
+            <input type="date" id="forecastDate" value="2026-03-20" />
+
+            <label for="forecastPeriod">Период:</label>
+            <select id="forecastPeriod">
+              <option value="day">Один день</option>
+              <option value="week">Неделя</option>
+              <option value="month">Месяц</option>
+            </select>
+
+            <label>
+              <input type="checkbox" id="applyDiscounts" checked />
+              Применить скидки автоматически
+            </label>
+
+            <button id="getForecastBtn" class="btn btn-primary">
+              Получить прогноз
+            </button>
+          </div>
+
+          <div id="forecastResult" class="forecast-result"></div>
+        </div>
+
+        <!-- Вкладка: Скидки -->
+        <div id="discountsTab" class="tab-content">
+          <div class="discounts-controls">
+            <label for="discountDateFilter">Фильтр по дате:</label>
+            <input type="date" id="discountDateFilter" />
+            <button id="filterDiscountsBtn" class="btn btn-primary">
+              Показать
+            </button>
+            <button id="clearAllDiscountsBtn" class="btn btn-danger">
+              Очистить все скидки
+            </button>
+          </div>
+
+          <div id="discountsList" class="discounts-list"></div>
+        </div>
+
+        <!-- Вкладка: Администрирование -->
+        <div id="adminTab" class="tab-content">
+          <div class="admin-section">
+            <h3>Управление моделью Prophet</h3>
+            <button id="trainModelBtn" class="btn btn-primary">
+              Обучить модель
+            </button>
+            <button id="checkModelBtn" class="btn btn-secondary">
+              Статус модели
+            </button>
+            <div id="modelStatus"></div>
+          </div>
+
+          <div class="admin-section">
+            <h3>Управление данными</h3>
+            <button id="clearAnalyticsBtn" class="btn btn-danger">
+              Очистить аналитику
+            </button>
+            <div id="adminResult"></div>
+          </div>
+          <div class="admin-section">
+            <h3>Назначить администратора</h3>
+            <div class="form-group">
+              <label for="targetUserId">ID пользователя:</label>
+              <input type="number" id="targetUserId" placeholder="Введите ID" />
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="setAdminFlag" /> Сделать
+                администратором
+              </label>
+            </div>
+            <button id="makeAdminBtn" class="btn btn-primary">Применить</button>
+            <div id="makeAdminResult"></div>
+          </div>
+        </div>
+      </main>
+
+      <!-- Модальное окно для входа -->
+      <div id="loginModal" class="modal">
+        <div class="modal-content">
+          <span class="close">&times;</span>
+          <h2>Вход в систему</h2>
+
+          <div class="form-group">
+            <label for="loginPhone">Телефон:</label>
+            <input type="text" id="loginPhone" placeholder="+79001234567" />
+          </div>
+
+          <div class="form-group">
+            <label for="loginPassword">Пароль:</label>
+            <input type="password" id="loginPassword" placeholder="********" />
+          </div>
+
+          <div class="form-actions">
+            <button id="loginSubmitBtn" class="btn btn-primary">Войти</button>
+            <button id="showRegisterBtn" class="btn btn-link">
+              Регистрация
+            </button>
+          </div>
+
+          <div id="loginError" class="error-message"></div>
+        </div>
+      </div>
+
+      <!-- Модальное окно для регистрации -->
+      <div id="registerModal" class="modal">
+        <div class="modal-content">
+          <span class="close">&times;</span>
+          <h2>Регистрация</h2>
+
+          <div class="form-group">
+            <label for="registerFio">ФИО:</label>
+            <input
+              type="text"
+              id="registerFio"
+              placeholder="Иванов Иван Иванович"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="registerPhone">Телефон:</label>
+            <input type="text" id="registerPhone" placeholder="+79001234567" />
+          </div>
+
+          <div class="form-group">
+            <label for="registerPassword">Пароль:</label>
+            <input
+              type="password"
+              id="registerPassword"
+              placeholder="********"
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="registerConfirmPassword">Подтверждение:</label>
+            <input
+              type="password"
+              id="registerConfirmPassword"
+              placeholder="********"
+            />
+          </div>
+
+          <div class="form-actions">
+            <button id="registerSubmitBtn" class="btn btn-primary">
+              Зарегистрироваться
+            </button>
+            <button id="backToLoginBtn" class="btn btn-link">
+              Назад ко входу
+            </button>
+          </div>
+
+          <div id="registerError" class="error-message"></div>
+        </div>
+      </div>
     </div>
 
     <script src="/static/script.js"></script>
-</body>
+  </body>
 </html>
